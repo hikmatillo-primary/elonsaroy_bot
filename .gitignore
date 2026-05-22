@@ -1,0 +1,15 @@
+.env
+.agent_context/
+.multica/
+CLAUDE.md
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
