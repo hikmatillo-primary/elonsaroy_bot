@@ -6,6 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import settings
+from app.database import engine
 from app.handlers import ad_create, admin, start
 from app.middlewares.db import DbSessionMiddleware
 
@@ -33,7 +34,11 @@ async def main() -> None:
     )
 
     logging.info("Bot ishga tushdi")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+        await engine.dispose()
 
 
 if __name__ == "__main__":

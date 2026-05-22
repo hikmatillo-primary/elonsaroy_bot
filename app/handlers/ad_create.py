@@ -13,7 +13,7 @@ from app.keyboards.reply import (
     main_menu_keyboard,
     skip_keyboard,
 )
-from app.models.ad import CATEGORY_LABELS
+from app.models.ad import CATEGORY_LABELS, Category
 from app.services.ad_service import AdService
 from app.services.user_service import UserService
 from app.states.ad_states import AdCreation
@@ -50,7 +50,7 @@ async def cancel_ad(message: Message, state: FSMContext) -> None:
     await message.answer("E'lon bekor qilindi.", reply_markup=main_menu_keyboard())
 
 
-@router.message(AdCreation.choosing_category)
+@router.message(AdCreation.choosing_category, F.text)
 async def process_category(message: Message, state: FSMContext) -> None:
     category = label_to_category(message.text)
     if category is None:
@@ -64,6 +64,14 @@ async def process_category(message: Message, state: FSMContext) -> None:
     await state.set_state(AdCreation.entering_title)
     await message.answer(
         f"Kategoriya: {CATEGORY_LABELS[category]}\n\nE'lon sarlavhasini kiriting:"
+    )
+
+
+@router.message(AdCreation.choosing_category)
+async def invalid_category_input(message: Message) -> None:
+    await message.answer(
+        "Iltimos, kategoriyani quyidagi tugmalar orqali tanlang:",
+        reply_markup=category_keyboard(),
     )
 
 
@@ -91,7 +99,7 @@ async def process_description(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(AdCreation.entering_price)
+@router.message(AdCreation.entering_price, F.text)
 async def process_price(message: Message, state: FSMContext) -> None:
     price = None if message.text == "⏭ O'tkazib yuborish" else message.text
     await state.update_data(price=price, photo_file_ids=[])
@@ -100,6 +108,14 @@ async def process_price(message: Message, state: FSMContext) -> None:
         f"Rasmlarni yuboring (maksimal {MAX_PHOTOS} ta).\n"
         "Tayyor bo'lganda pastdagi tugmani bosing.",
         reply_markup=done_photos_keyboard(),
+    )
+
+
+@router.message(AdCreation.entering_price)
+async def invalid_price_input(message: Message) -> None:
+    await message.answer(
+        "Iltimos, narxni matn orqali kiriting yoki o'tkazib yuboring.",
+        reply_markup=skip_keyboard(),
     )
 
 
@@ -132,7 +148,14 @@ async def process_photo(message: Message, state: FSMContext) -> None:
 @router.message(AdCreation.uploading_photos, F.text == "✅ Tayyor")
 async def photos_done(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    from app.models.ad import Ad, Category
+    photos = data.get("photo_file_ids", [])
+
+    if not photos:
+        await message.answer(
+            "Kamida bitta rasm yuborishingiz kerak.",
+            reply_markup=done_photos_keyboard(),
+        )
+        return
 
     preview = (
         f"<b>Kategoriya:</b> {CATEGORY_LABELS[Category(data['category'])]}\n"
@@ -142,7 +165,6 @@ async def photos_done(message: Message, state: FSMContext) -> None:
     if data.get("price"):
         preview += f"<b>Narx:</b> {data['price']}\n"
     preview += f"<b>Aloqa:</b> {data['contact_phone']}\n"
-    photos = data.get("photo_file_ids", [])
     preview += f"<b>Rasmlar:</b> {len(photos)} ta\n"
     preview += "\nTasdiqlaysizmi?"
 
@@ -163,7 +185,6 @@ async def confirm_ad(
     message: Message, state: FSMContext, session: AsyncSession, bot: Bot
 ) -> None:
     data = await state.get_data()
-    from app.models.ad import Category
 
     ad_service = AdService(session)
     ad = await ad_service.create_ad(
