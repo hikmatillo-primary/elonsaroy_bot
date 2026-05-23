@@ -41,13 +41,13 @@ def upgrade() -> None:
     op.create_index("ix_users_telegram_id", "users", ["telegram_id"], unique=True)
 
     category_enum = postgresql.ENUM(
-        "auto", "realestate", "phone", "jobs", name="category_enum", create_type=True
+        "auto", "realestate", "phone", "jobs", name="category_enum", create_type=False
     )
     category_enum.create(op.get_bind(), checkfirst=True)
 
     status_enum = postgresql.ENUM(
         "draft", "pending", "approved", "rejected",
-        name="ad_status_enum", create_type=True,
+        name="ad_status_enum", create_type=False,
     )
     status_enum.create(op.get_bind(), checkfirst=True)
 
