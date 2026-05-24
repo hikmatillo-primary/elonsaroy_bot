@@ -94,3 +94,20 @@ class TestAdService:
         ad_service.repo.update_status.assert_called_with(
             sample_ad.id, AdStatus.APPROVED, main_channel_message_id=200
         )
+
+    @pytest.mark.asyncio
+    async def test_get_user_ads_delegates_to_repo(self, ad_service):
+        ad_service.repo.get_by_user_id = AsyncMock(return_value=["ad1", "ad2"])
+
+        result = await ad_service.get_user_ads(1)
+
+        ad_service.repo.get_by_user_id.assert_awaited_once_with(1)
+        assert result == ["ad1", "ad2"]
+
+    @pytest.mark.asyncio
+    async def test_get_user_ads_returns_empty_list(self, ad_service):
+        ad_service.repo.get_by_user_id = AsyncMock(return_value=[])
+
+        result = await ad_service.get_user_ads(999)
+
+        assert result == []

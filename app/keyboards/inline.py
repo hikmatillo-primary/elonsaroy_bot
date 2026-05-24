@@ -71,11 +71,16 @@ def confirm_inline_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="✏️ Tahrirlash", callback_data="edit_ad"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="✅ Tasdiqlash", callback_data="confirm_ad"
                 ),
                 InlineKeyboardButton(
                     text="❌ Bekor qilish", callback_data="cancel_ad"
                 ),
-            ]
+            ],
         ]
     )

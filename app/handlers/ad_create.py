@@ -1,4 +1,7 @@
+import logging
+
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InputMediaPhoto, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,11 +26,13 @@ from app.keyboards.reply import (
     done_photos_keyboard,
     main_menu_keyboard,
 )
-from app.models.ad import CATEGORY_LABELS, Category
+from app.models.ad import AdStatus, CATEGORY_LABELS, Category
 from app.services.ad_service import AdService
 from app.services.user_service import UserService
 from app.states.ad_states import AdCreation
 from app.utils.formatting import format_ad_text
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -349,43 +354,113 @@ async def confirm_ad(
     admin_text = f"📋 <b>Yangi e'lon #{ad.id}</b>\n\n{ad_text}"
 
     photos = data.get("photo_file_ids", [])
-    if photos:
-        media = [
-            InputMediaPhoto(
-                media=fid,
-                caption=admin_text if i == 0 else None,
-                parse_mode="HTML" if i == 0 else None,
+    try:
+        if photos:
+            media = [
+                InputMediaPhoto(
+                    media=fid,
+                    caption=admin_text if i == 0 else None,
+                    parse_mode="HTML" if i == 0 else None,
+                )
+                for i, fid in enumerate(photos)
+            ]
+            media[0] = InputMediaPhoto(
+                media=photos[0],
+                caption=admin_text,
+                parse_mode="HTML",
             )
-            for i, fid in enumerate(photos)
-        ]
-        media[0] = InputMediaPhoto(
-            media=photos[0],
-            caption=admin_text,
-            parse_mode="HTML",
-        )
-        group_messages = await bot.send_media_group(
-            chat_id=settings.admin_channel_id, media=media
-        )
-        admin_msg = await bot.send_message(
-            chat_id=settings.admin_channel_id,
-            text=f"E'lon #{ad.id} uchun qaror:",
-            reply_markup=admin_review_keyboard(ad.id),
-            reply_to_message_id=group_messages[0].message_id,
-        )
-    else:
-        admin_msg = await bot.send_message(
-            chat_id=settings.admin_channel_id,
-            text=admin_text,
-            parse_mode="HTML",
-            reply_markup=admin_review_keyboard(ad.id),
-        )
+            group_messages = await bot.send_media_group(
+                chat_id=settings.admin_channel_id, media=media
+            )
+            admin_msg = await bot.send_message(
+                chat_id=settings.admin_channel_id,
+                text=f"E'lon #{ad.id} uchun qaror:",
+                reply_markup=admin_review_keyboard(ad.id),
+                reply_to_message_id=group_messages[0].message_id,
+            )
+        else:
+            admin_msg = await bot.send_message(
+                chat_id=settings.admin_channel_id,
+                text=admin_text,
+                parse_mode="HTML",
+                reply_markup=admin_review_keyboard(ad.id),
+            )
 
-    await ad_service.submit_for_review(ad.id, admin_msg.message_id)
-    await state.clear()
-    await callback.message.edit_text("E'loningiz yuborildi ✅")
+        await ad_service.submit_for_review(ad.id, admin_msg.message_id)
+        await state.clear()
+        await callback.message.edit_text("E'loningiz yuborildi ✅")
+        await callback.message.answer(
+            "E'loningiz adminlarga ko'rib chiqish uchun yuborildi ✅\n"
+            "Natija haqida xabar beriladi.",
+            reply_markup=main_menu_keyboard(),
+        )
+        await callback.answer()
+    except TelegramAPIError as e:
+        logger.error("Failed to send ad #%d to admin channel: %s", ad.id, e)
+        await state.update_data(submitting=False)
+        await callback.message.answer(
+            "E'loningizni yuborishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
+            reply_markup=main_menu_keyboard(),
+        )
+        await callback.answer("Xatolik yuz berdi", show_alert=True)
+
+
+STATUS_LABELS = {
+    AdStatus.DRAFT: "📝 Qoralama",
+    AdStatus.PENDING: "🕐 Ko'rib chiqilmoqda",
+    AdStatus.APPROVED: "✅ Tasdiqlangan",
+    AdStatus.REJECTED: "❌ Rad etilgan",
+}
+
+
+# ── Edit ad (go back to category selection) ────────────────────────────
+
+
+@router.callback_query(AdCreation.confirming, F.data == "edit_ad")
+async def edit_ad(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(submitting=False)
+    await state.set_state(AdCreation.choosing_category)
+    await callback.message.edit_text("Kategoriyani qayta tanlang:")
     await callback.message.answer(
-        "E'loningiz adminlarga ko'rib chiqish uchun yuborildi ✅\n"
-        "Natija haqida xabar beriladi.",
-        reply_markup=main_menu_keyboard(),
+        "⬇️ Quyidagilardan birini tanlang:",
+        reply_markup=category_inline_keyboard(),
     )
     await callback.answer()
+
+
+# ── My ads ──────────────────────────────────────────────────────────────
+
+
+@router.message(F.text == "📋 E'lonlarim")
+async def my_ads(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    user_service = UserService(session)
+    user = await user_service.get_or_none(message.from_user.id)
+    if not user:
+        await message.answer("Avval /start buyrug'ini yuboring va ro'yxatdan o'ting.")
+        return
+
+    ad_service = AdService(session)
+    ads = await ad_service.get_user_ads(user.id)
+
+    if not ads:
+        await message.answer(
+            "Sizda hali e'lonlar yo'q.\nE'lon berish uchun 📝 E'lon berish tugmasini bosing.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    lines = ["<b>📋 Mening e'lonlarim:</b>\n"]
+    for ad in ads:
+        status_label = STATUS_LABELS.get(ad.status, ad.status.value)
+        lines.append(
+            f"#{ad.id} — {CATEGORY_LABELS.get(ad.category, ad.category.value)} — {status_label}"
+        )
+    lines.append("\nE'lon berish uchun 📝 E'lon berish tugmasini bosing.")
+
+    await message.answer(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard(),
+    )

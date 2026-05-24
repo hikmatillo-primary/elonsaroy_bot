@@ -43,3 +43,6 @@ class AdService:
 
     async def get_ad(self, ad_id: int) -> Ad | None:
         return await self.repo.get_by_id(ad_id)
+
+    async def get_user_ads(self, user_id: int) -> list[Ad]:
+        return await self.repo.get_by_user_id(user_id)

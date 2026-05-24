@@ -115,3 +115,22 @@ class TestAdRepository:
             )
             added = mock_session.add.call_args[0][0]
             assert added.category == cat
+
+    @pytest.mark.asyncio
+    async def test_get_by_user_id_returns_ads(self, ad_repo, mock_session, sample_ad):
+        mock_result = mock_session.execute.return_value
+        mock_result.scalars.return_value.all.return_value = [sample_ad]
+
+        ads = await ad_repo.get_by_user_id(1)
+
+        assert len(ads) == 1
+        assert ads[0] is sample_ad
+
+    @pytest.mark.asyncio
+    async def test_get_by_user_id_returns_empty_list(self, ad_repo, mock_session):
+        mock_result = mock_session.execute.return_value
+        mock_result.scalars.return_value.all.return_value = []
+
+        ads = await ad_repo.get_by_user_id(999)
+
+        assert ads == []
