@@ -40,6 +40,15 @@ class AdRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_user_id(self, user_id: int) -> list[Ad]:
+        result = await self.session.execute(
+            select(Ad)
+            .options(joinedload(Ad.user))
+            .where(Ad.user_id == user_id)
+            .order_by(Ad.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def update_status(
         self, ad_id: int, status: AdStatus, **kwargs: int | None
     ) -> Ad | None:

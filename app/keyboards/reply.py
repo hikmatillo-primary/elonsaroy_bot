@@ -13,7 +13,10 @@ def contact_keyboard() -> ReplyKeyboardMarkup:
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📝 E'lon berish")]],
+        keyboard=[
+            [KeyboardButton(text="📝 E'lon berish")],
+            [KeyboardButton(text="📋 E'lonlarim")],
+        ],
         resize_keyboard=True,
     )
 

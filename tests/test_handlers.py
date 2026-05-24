@@ -8,8 +8,10 @@ from app.handlers.ad_create import (
     cancel_ad_callback,
     cancel_ad_text,
     confirm_ad,
+    edit_ad,
     invalid_photo,
     invalid_question_input,
+    my_ads,
     photos_done,
     process_category,
     process_option_answer,
@@ -749,3 +751,117 @@ class TestAdminHandler:
         callback.answer.assert_awaited_once_with(
             "Bu e'lon allaqachon ko'rib chiqilgan.", show_alert=True
         )
+
+
+class TestEditAd:
+    @pytest.mark.asyncio
+    async def test_edit_ad_resets_and_returns_to_category(self, mock_state):
+        callback = AsyncMock()
+        callback.data = "edit_ad"
+        callback.message = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        callback.message.answer = AsyncMock()
+        callback.answer = AsyncMock()
+
+        await edit_ad(callback, mock_state)
+
+        mock_state.update_data.assert_awaited_once_with(submitting=False)
+        mock_state.set_state.assert_awaited_once_with(AdCreation.choosing_category)
+        callback.answer.assert_awaited_once()
+
+
+class TestMyAds:
+    @pytest.mark.asyncio
+    async def test_my_ads_unregistered_user(self, mock_session, mock_state):
+        message = AsyncMock(spec=Message)
+        message.from_user = MagicMock()
+        message.from_user.id = 12345
+        message.text = "📋 E'lonlarim"
+        message.answer = AsyncMock()
+
+        mock_session.execute.return_value.scalar_one_or_none.return_value = None
+
+        await my_ads(message, mock_state, mock_session)
+
+        message.answer.assert_awaited_once()
+        assert "ro'yxatdan" in message.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_my_ads_no_ads(self, mock_session, mock_state, sample_user):
+        message = AsyncMock(spec=Message)
+        message.from_user = MagicMock()
+        message.from_user.id = sample_user.telegram_id
+        message.text = "📋 E'lonlarim"
+        message.answer = AsyncMock()
+
+        mock_session.execute.return_value.scalar_one_or_none.return_value = sample_user
+
+        with patch("app.handlers.ad_create.AdService") as MockAdService:
+            service = MockAdService.return_value
+            service.get_user_ads = AsyncMock(return_value=[])
+
+            await my_ads(message, mock_state, mock_session)
+
+        message.answer.assert_awaited_once()
+        assert "yo'q" in message.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_my_ads_with_ads(self, mock_session, mock_state, sample_user, sample_ad):
+        message = AsyncMock(spec=Message)
+        message.from_user = MagicMock()
+        message.from_user.id = sample_user.telegram_id
+        message.text = "📋 E'lonlarim"
+        message.answer = AsyncMock()
+
+        mock_session.execute.return_value.scalar_one_or_none.return_value = sample_user
+
+        with patch("app.handlers.ad_create.AdService") as MockAdService:
+            service = MockAdService.return_value
+            service.get_user_ads = AsyncMock(return_value=[sample_ad])
+
+            await my_ads(message, mock_state, mock_session)
+
+        message.answer.assert_awaited_once()
+        assert "#" in message.answer.call_args[0][0]
+
+
+class TestConfirmAdErrorHandling:
+    @pytest.mark.asyncio
+    async def test_confirm_ad_telegram_api_error(self, mock_session, mock_state, mock_bot):
+        from aiogram.exceptions import TelegramAPIError
+
+        callback = AsyncMock()
+        callback.data = "confirm_ad"
+        callback.message = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        callback.message.answer = AsyncMock()
+        callback.answer = AsyncMock()
+
+        ad = MagicMock()
+        ad.id = 1
+        ad.category = Category.AUTO
+        ad.title = "Test"
+        ad.description = "Desc"
+        ad.price = None
+        ad.contact_phone = "+998901234567"
+
+        mock_state.get_data = AsyncMock(return_value={
+            "user_db_id": 1,
+            "category": "auto",
+            "answers": {"title": "Test"},
+            "contact_phone": "+998901234567",
+            "photo_file_ids": [],
+        })
+
+        mock_bot.send_message.side_effect = TelegramAPIError(method="send_message", message="Test error")
+
+        with patch("app.handlers.ad_create.AdService") as MockAdService:
+            service = MockAdService.return_value
+            service.create_ad = AsyncMock(return_value=ad)
+
+            with patch("app.handlers.ad_create.settings") as mock_settings:
+                mock_settings.admin_channel_id = -100123
+                await confirm_ad(callback, mock_state, mock_session, mock_bot)
+
+        mock_state.update_data.assert_any_await(submitting=False)
+        callback.answer.assert_awaited_with("Xatolik yuz berdi", show_alert=True)
