@@ -16,13 +16,14 @@ from app.handlers.question_flow import (
 )
 from app.keyboards.inline import (
     admin_review_keyboard,
-    category_inline_keyboard,
     confirm_inline_keyboard,
     options_keyboard,
     skip_inline_keyboard,
+    back_inline_keyboard,
 )
 from app.keyboards.reply import (
     cancel_keyboard,
+    category_reply_keyboard,
     done_photos_keyboard,
     main_menu_keyboard,
 )
@@ -57,16 +58,24 @@ async def _send_next_question(target: Message, state: FSMContext) -> None:
 
     await state.set_state(AdCreation.answering_questions)
     question = questions[q_index]
+    show_back = q_index > 0
 
     if question.options:
         await target.answer(
             question.prompt,
-            reply_markup=options_keyboard(question.options, show_skip=question.optional),
+            reply_markup=options_keyboard(
+                question.options, show_skip=question.optional, show_back=show_back
+            ),
         )
     elif question.optional:
-        await target.answer(question.prompt, reply_markup=skip_inline_keyboard())
+        await target.answer(
+            question.prompt, reply_markup=skip_inline_keyboard(show_back=show_back)
+        )
     else:
-        await target.answer(question.prompt)
+        if show_back:
+            await target.answer(question.prompt, reply_markup=back_inline_keyboard())
+        else:
+            await target.answer(question.prompt)
 
 
 # ── Start ad creation ──────────────────────────────────────────────────
@@ -85,11 +94,8 @@ async def start_ad_creation(
     await state.update_data(user_db_id=user.id, contact_phone=user.phone_number)
     await state.set_state(AdCreation.choosing_category)
     await message.answer(
-        "Kategoriyani tanlang:", reply_markup=cancel_keyboard()
-    )
-    await message.answer(
-        "⬇️ Quyidagilardan birini tanlang:",
-        reply_markup=category_inline_keyboard(),
+        "⬇️ Kategoriyani tanlang:",
+        reply_markup=category_reply_keyboard(),
     )
 
 
@@ -121,32 +127,27 @@ async def cancel_ad_callback(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer()
 
 
-# ── Category selection (inline callback) ───────────────────────────────
+# ── Category selection (reply keyboard) ───────────────────────────────
 
 
-@router.callback_query(AdCreation.choosing_category, F.data.startswith("cat:"))
-async def process_category(callback: CallbackQuery, state: FSMContext) -> None:
-    cat_value = callback.data.split(":", 1)[1]
-    try:
-        category = Category(cat_value)
-    except ValueError:
-        await callback.answer("Noto'g'ri kategoriya.", show_alert=True)
+@router.message(AdCreation.choosing_category, F.text.in_([label for label in CATEGORY_LABELS.values()]))
+async def process_category_reply(message: Message, state: FSMContext) -> None:
+    text = message.text
+    category = None
+    for cat, label in CATEGORY_LABELS.items():
+        if label == text:
+            category = cat
+            break
+    
+    if not category:
+        await message.answer(
+            "Iltimos, kategoriyani quyidagi tugmalar orqali tanlang:",
+            reply_markup=category_reply_keyboard(),
+        )
         return
 
-    await callback.message.edit_text(
-        f"Kategoriya: {CATEGORY_LABELS[category]}"
-    )
     await state.update_data(category=category.value, q_index=0, answers={})
-    await _send_next_question(callback.message, state)
-    await callback.answer()
-
-
-@router.message(AdCreation.choosing_category)
-async def invalid_category_input(message: Message) -> None:
-    await message.answer(
-        "Iltimos, kategoriyani yuqoridagi tugmalar orqali tanlang:",
-        reply_markup=category_inline_keyboard(),
-    )
+    await _send_next_question(message, state)
 
 
 # ── Dynamic question flow: text answer ────────────────────────────────
@@ -245,6 +246,21 @@ async def skip_question(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(AdCreation.answering_questions, F.data == "back_question")
+async def back_question(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    q_index = data.get("q_index", 0)
+
+    if q_index == 0:
+        await callback.answer()
+        return
+
+    await callback.message.edit_text("⬅️ Orqaga qaytdingiz")
+    await state.update_data(q_index=q_index - 1)
+    await _send_next_question(callback.message, state)
+    await callback.answer()
+
+
 # ── Photo upload ───────────────────────────────────────────────────────
 
 
@@ -293,6 +309,7 @@ async def photos_done(message: Message, state: FSMContext) -> None:
     price = get_price_from_answers(category, answers)
 
     preview = (
+        f"<b>📋 E'lon ko'rinishi:</b>\n\n"
         f"<b>Kategoriya:</b> {CATEGORY_LABELS[category]}\n"
         f"<b>Sarlavha:</b> {title}\n"
         f"<b>Tavsif:</b>\n{description}\n"
@@ -301,12 +318,35 @@ async def photos_done(message: Message, state: FSMContext) -> None:
         preview += f"<b>Narx:</b> {price}\n"
     preview += f"<b>Aloqa:</b> {data['contact_phone']}\n"
     preview += f"<b>Rasmlar:</b> {len(photos)} ta\n"
-    preview += "\nTasdiqlaysizmi?"
 
     await state.set_state(AdCreation.confirming)
-    await message.answer(
-        preview, parse_mode="HTML", reply_markup=confirm_inline_keyboard()
-    )
+    
+    try:
+        if len(photos) == 1:
+            await message.answer_photo(
+                photo=photos[0], caption=preview, parse_mode="HTML"
+            )
+        else:
+            media = [
+                InputMediaPhoto(
+                    media=fid,
+                    caption=preview if i == 0 else None,
+                    parse_mode="HTML" if i == 0 else None,
+                )
+                for i, fid in enumerate(photos)
+            ]
+            await message.answer_media_group(media=media)
+        await message.answer(
+            "Yuqoridagi e'lonni tasdiqlaysizmi?",
+            reply_markup=confirm_inline_keyboard(),
+        )
+    except TelegramAPIError as e:
+        logger.error("Failed to send preview: %s", e)
+        await message.answer(
+            preview,
+            parse_mode="HTML",
+            reply_markup=confirm_inline_keyboard(),
+        )
 
 
 @router.message(AdCreation.uploading_photos)
@@ -355,7 +395,20 @@ async def confirm_ad(
 
     photos = data.get("photo_file_ids", [])
     try:
-        if photos:
+        if len(photos) == 1:
+            sent_photo = await bot.send_photo(
+                chat_id=settings.admin_channel_id,
+                photo=photos[0],
+                caption=admin_text,
+                parse_mode="HTML",
+            )
+            admin_msg = await bot.send_message(
+                chat_id=settings.admin_channel_id,
+                text=f"E'lon #{ad.id} uchun qaror:",
+                reply_markup=admin_review_keyboard(ad.id),
+                reply_to_message_id=sent_photo.message_id,
+            )
+        elif len(photos) > 1:
             media = [
                 InputMediaPhoto(
                     media=fid,
@@ -364,11 +417,6 @@ async def confirm_ad(
                 )
                 for i, fid in enumerate(photos)
             ]
-            media[0] = InputMediaPhoto(
-                media=photos[0],
-                caption=admin_text,
-                parse_mode="HTML",
-            )
             group_messages = await bot.send_media_group(
                 chat_id=settings.admin_channel_id, media=media
             )
@@ -413,18 +461,15 @@ STATUS_LABELS = {
 }
 
 
-# ── Edit ad (go back to category selection) ────────────────────────────
+# ── Edit ad (go back to questions) ────────────────────────────────────
 
 
 @router.callback_query(AdCreation.confirming, F.data == "edit_ad")
 async def edit_ad(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(submitting=False)
-    await state.set_state(AdCreation.choosing_category)
-    await callback.message.edit_text("Kategoriyani qayta tanlang:")
-    await callback.message.answer(
-        "⬇️ Quyidagilardan birini tanlang:",
-        reply_markup=category_inline_keyboard(),
-    )
+    await state.update_data(submitting=False, q_index=0, photo_file_ids=[])
+    await state.set_state(AdCreation.answering_questions)
+    await callback.message.edit_text("E'lonni qayta to'ldiring:")
+    await _send_next_question(callback.message, state)
     await callback.answer()
 
 

@@ -18,23 +18,8 @@ def admin_review_keyboard(ad_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def category_inline_keyboard() -> InlineKeyboardMarkup:
-    items = list(CATEGORY_LABELS.items())
-    rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(items), 2):
-        row = [
-            InlineKeyboardButton(text=label, callback_data=f"cat:{cat.value}")
-            for cat, label in items[i : i + 2]
-        ]
-        rows.append(row)
-    rows.append(
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_ad")]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 def options_keyboard(
-    options: list[tuple[str, str]], *, show_skip: bool = False
+    options: list[tuple[str, str]], *, show_skip: bool = False, show_back: bool = False
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(options), 2):
@@ -43,25 +28,40 @@ def options_keyboard(
             for key, label in options[i : i + 2]
         ]
         rows.append(row)
-    if show_skip:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="⏭ O'tkazib yuborish", callback_data="skip_question"
-                )
-            ]
+    nav_buttons: list[InlineKeyboardButton] = []
+    if show_back:
+        nav_buttons.append(
+            InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_question")
         )
+    if show_skip:
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="⏭ O'tkazib yuborish", callback_data="skip_question"
+            )
+        )
+    if nav_buttons:
+        rows.append(nav_buttons)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def skip_inline_keyboard() -> InlineKeyboardMarkup:
+def skip_inline_keyboard(show_back: bool = False) -> InlineKeyboardMarkup:
+    buttons = []
+    if show_back:
+        buttons.append(
+            InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_question")
+        )
+    buttons.append(
+        InlineKeyboardButton(
+            text="⏭ O'tkazib yuborish", callback_data="skip_question"
+        )
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
+def back_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⏭ O'tkazib yuborish", callback_data="skip_question"
-                )
-            ]
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back_question")]
         ]
     )
 
