@@ -7,8 +7,6 @@ class Registration(StatesGroup):
 
 class AdCreation(StatesGroup):
     choosing_category = State()
-    entering_title = State()
-    entering_description = State()
-    entering_price = State()
+    answering_questions = State()
     uploading_photos = State()
     confirming = State()
