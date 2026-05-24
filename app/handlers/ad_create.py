@@ -9,6 +9,7 @@ from app.handlers.question_flow import (
     build_description,
     get_price_from_answers,
     get_title_from_answers,
+    validate_answer,
 )
 from app.keyboards.inline import (
     admin_review_keyboard,
@@ -102,7 +103,10 @@ async def cancel_ad_text(message: Message, state: FSMContext) -> None:
 # ── Cancel (inline callback) ──────────────────────────────────────────
 
 
-@router.callback_query(F.data == "cancel_ad")
+@router.callback_query(AdCreation.choosing_category, F.data == "cancel_ad")
+@router.callback_query(AdCreation.answering_questions, F.data == "cancel_ad")
+@router.callback_query(AdCreation.uploading_photos, F.data == "cancel_ad")
+@router.callback_query(AdCreation.confirming, F.data == "cancel_ad")
 async def cancel_ad_callback(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("E'lon bekor qilindi.")
@@ -164,12 +168,19 @@ async def process_text_answer(message: Message, state: FSMContext) -> None:
         )
         return
 
-    if question.is_title and len(message.text) > 255:
+    text = message.text.strip()
+
+    if question.is_title and len(text) > 255:
         await message.answer("Sarlavha 255 belgidan oshmasligi kerak.")
         return
 
+    error = validate_answer(question, text)
+    if error:
+        await message.answer(error)
+        return
+
     answers: dict = data.get("answers", {})
-    answers[question.key] = message.text
+    answers[question.key] = text
     await state.update_data(answers=answers, q_index=q_index + 1)
     await _send_next_question(message, state)
 
@@ -193,11 +204,19 @@ async def process_option_answer(callback: CallbackQuery, state: FSMContext) -> N
         await callback.answer()
         return
 
-    value = callback.data.split(":", 1)[1]
+    opt_key = callback.data.split(":", 1)[1]
+    question = questions[q_index]
+    label = opt_key
+    if question.options:
+        for k, lbl in question.options:
+            if k == opt_key:
+                label = lbl
+                break
+
     answers: dict = data.get("answers", {})
-    answers[questions[q_index].key] = value
+    answers[question.key] = label
     await callback.message.edit_text(
-        f"{questions[q_index].prompt} {value}"
+        f"{question.prompt} {label}"
     )
     await state.update_data(answers=answers, q_index=q_index + 1)
     await _send_next_question(callback.message, state)
@@ -207,7 +226,14 @@ async def process_option_answer(callback: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(AdCreation.answering_questions, F.data == "skip_question")
 async def skip_question(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    category = Category(data["category"])
+    questions = CATEGORY_QUESTIONS[category]
     q_index = data.get("q_index", 0)
+
+    if q_index < len(questions) and not questions[q_index].optional:
+        await callback.answer("Bu savolni o'tkazib bo'lmaydi.", show_alert=True)
+        return
+
     await callback.message.edit_text("⏭ O'tkazib yuborildi")
     await state.update_data(q_index=q_index + 1)
     await _send_next_question(callback.message, state)
@@ -294,6 +320,13 @@ async def confirm_ad(
     callback: CallbackQuery, state: FSMContext, session: AsyncSession, bot: Bot
 ) -> None:
     data = await state.get_data()
+
+    if data.get("submitting"):
+        await callback.answer("E'lon allaqachon yuborilmoqda...", show_alert=True)
+        return
+
+    await state.update_data(submitting=True)
+
     category = Category(data["category"])
     answers: dict = data.get("answers", {})
 
@@ -312,7 +345,6 @@ async def confirm_ad(
         photo_file_ids=data.get("photo_file_ids") or None,
     )
 
-    ad = await ad_service.get_ad(ad.id)
     ad_text = format_ad_text(ad)
     admin_text = f"📋 <b>Yangi e'lon #{ad.id}</b>\n\n{ad_text}"
 
@@ -326,13 +358,19 @@ async def confirm_ad(
             )
             for i, fid in enumerate(photos)
         ]
-        await bot.send_media_group(
+        media[0] = InputMediaPhoto(
+            media=photos[0],
+            caption=admin_text,
+            parse_mode="HTML",
+        )
+        group_messages = await bot.send_media_group(
             chat_id=settings.admin_channel_id, media=media
         )
         admin_msg = await bot.send_message(
             chat_id=settings.admin_channel_id,
             text=f"E'lon #{ad.id} uchun qaror:",
             reply_markup=admin_review_keyboard(ad.id),
+            reply_to_message_id=group_messages[0].message_id,
         )
     else:
         admin_msg = await bot.send_message(

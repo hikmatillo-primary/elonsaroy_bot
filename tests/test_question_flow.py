@@ -2,9 +2,11 @@ import pytest
 
 from app.handlers.question_flow import (
     CATEGORY_QUESTIONS,
+    Question,
     build_description,
     get_price_from_answers,
     get_title_from_answers,
+    validate_answer,
 )
 from app.models.ad import Category
 
@@ -110,3 +112,48 @@ class TestQuestionFlow:
                     assert q.optional, f"{cat.value}.{q.key} should be optional"
                 if q.is_price:
                     assert q.optional, f"{cat.value} price question should be optional"
+
+    def test_options_are_tuples(self):
+        for cat in Category:
+            for q in CATEGORY_QUESTIONS[cat]:
+                if q.options:
+                    for opt in q.options:
+                        assert isinstance(opt, tuple) and len(opt) == 2
+
+
+class TestValidateAnswer:
+    def test_integer_field_rejects_text(self):
+        q = Question(key="year", prompt="Year:", field_type="integer")
+        assert validate_answer(q, "abc") is not None
+
+    def test_integer_field_accepts_digits(self):
+        q = Question(key="year", prompt="Year:", field_type="integer")
+        assert validate_answer(q, "2020") is None
+
+    def test_number_field_rejects_text(self):
+        q = Question(key="area", prompt="Area:", field_type="number")
+        assert validate_answer(q, "big") is not None
+
+    def test_number_field_accepts_float(self):
+        q = Question(key="area", prompt="Area:", field_type="number")
+        assert validate_answer(q, "65.5") is None
+
+    def test_number_field_accepts_comma_decimal(self):
+        q = Question(key="area", prompt="Area:", field_type="number")
+        assert validate_answer(q, "65,5") is None
+
+    def test_min_length_check(self):
+        q = Question(key="address", prompt="Address:", min_length=3)
+        assert validate_answer(q, "ab") is not None
+
+    def test_max_length_check(self):
+        q = Question(key="color", prompt="Color:", max_length=50)
+        assert validate_answer(q, "x" * 51) is not None
+
+    def test_empty_string_rejected(self):
+        q = Question(key="title", prompt="Title:")
+        assert validate_answer(q, "   ") is not None
+
+    def test_valid_text_accepted(self):
+        q = Question(key="title", prompt="Title:")
+        assert validate_answer(q, "Chevrolet Malibu") is None

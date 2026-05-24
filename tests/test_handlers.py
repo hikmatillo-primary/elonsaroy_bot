@@ -7,13 +7,18 @@ from app.handlers.admin import approve_ad, reject_ad
 from app.handlers.ad_create import (
     cancel_ad_callback,
     cancel_ad_text,
+    confirm_ad,
+    invalid_photo,
+    invalid_question_input,
+    photos_done,
     process_category,
     process_option_answer,
+    process_photo,
     process_text_answer,
     skip_question,
     start_ad_creation,
 )
-from app.handlers.question_flow import CATEGORY_QUESTIONS
+from app.handlers.question_flow import CATEGORY_QUESTIONS, validate_answer
 from app.models.ad import AdStatus, Category
 from app.states.ad_states import AdCreation, Registration
 
@@ -184,7 +189,7 @@ class TestAdCreationFlow:
     @pytest.mark.asyncio
     async def test_process_option_answer(self, mock_state):
         callback = AsyncMock()
-        callback.data = "opt:Yangi"
+        callback.data = "opt:new"
         callback.message = AsyncMock()
         callback.message.edit_text = AsyncMock()
         callback.message.answer = AsyncMock()
@@ -259,6 +264,388 @@ class TestAdCreationFlow:
             questions = CATEGORY_QUESTIONS[cat]
             assert len(questions) > 0
             assert any(q.is_title for q in questions)
+
+
+class TestConfirmAd:
+    @pytest.mark.asyncio
+    async def test_confirm_ad_success(self, mock_session, mock_state, mock_bot, sample_user):
+        callback = AsyncMock()
+        callback.data = "confirm_ad"
+        callback.message = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        callback.message.answer = AsyncMock()
+        callback.answer = AsyncMock()
+
+        ad = MagicMock()
+        ad.id = 1
+        ad.category = Category.AUTO
+        ad.title = "Test Car"
+        ad.description = "Test desc"
+        ad.price = "10000"
+        ad.contact_phone = "+998901234567"
+
+        mock_state.get_data = AsyncMock(return_value={
+            "user_db_id": 1,
+            "category": "auto",
+            "answers": {"title": "Test Car"},
+            "contact_phone": "+998901234567",
+            "photo_file_ids": ["fid1"],
+        })
+
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+        mock_session.refresh = AsyncMock()
+
+        sent_msg = MagicMock()
+        sent_msg.message_id = 100
+        mock_bot.send_message.return_value = sent_msg
+        group_msg = MagicMock()
+        group_msg.message_id = 99
+        mock_bot.send_media_group.return_value = [group_msg]
+
+        with patch("app.handlers.ad_create.AdService") as MockAdService:
+            service = MockAdService.return_value
+            service.create_ad = AsyncMock(return_value=ad)
+            service.submit_for_review = AsyncMock()
+
+            with patch("app.handlers.ad_create.settings") as mock_settings:
+                mock_settings.admin_channel_id = -100123
+                await confirm_ad(callback, mock_state, mock_session, mock_bot)
+
+        mock_state.clear.assert_awaited_once()
+        callback.answer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_confirm_ad_race_condition_blocked(self, mock_session, mock_state, mock_bot):
+        callback = AsyncMock()
+        callback.data = "confirm_ad"
+        callback.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "submitting": True,
+            "category": "auto",
+            "answers": {},
+            "user_db_id": 1,
+            "contact_phone": "+998901234567",
+        })
+
+        await confirm_ad(callback, mock_state, mock_session, mock_bot)
+
+        callback.answer.assert_awaited_once_with(
+            "E'lon allaqachon yuborilmoqda...", show_alert=True
+        )
+        mock_state.clear.assert_not_called()
+        mock_bot.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_confirm_ad_sets_submitting_flag(self, mock_session, mock_state, mock_bot):
+        callback = AsyncMock()
+        callback.data = "confirm_ad"
+        callback.message = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        callback.message.answer = AsyncMock()
+        callback.answer = AsyncMock()
+
+        ad = MagicMock()
+        ad.id = 1
+        ad.category = Category.AUTO
+        ad.title = "T"
+        ad.description = "D"
+        ad.price = None
+        ad.contact_phone = "+998901234567"
+
+        mock_state.get_data = AsyncMock(return_value={
+            "user_db_id": 1,
+            "category": "auto",
+            "answers": {"title": "T"},
+            "contact_phone": "+998901234567",
+            "photo_file_ids": [],
+        })
+
+        sent_msg = MagicMock()
+        sent_msg.message_id = 100
+        mock_bot.send_message.return_value = sent_msg
+
+        with patch("app.handlers.ad_create.AdService") as MockAdService:
+            service = MockAdService.return_value
+            service.create_ad = AsyncMock(return_value=ad)
+            service.submit_for_review = AsyncMock()
+
+            with patch("app.handlers.ad_create.settings") as mock_settings:
+                mock_settings.admin_channel_id = -100123
+                await confirm_ad(callback, mock_state, mock_session, mock_bot)
+
+        mock_state.update_data.assert_any_await(submitting=True)
+
+
+class TestPhotoHandlers:
+    @pytest.mark.asyncio
+    async def test_process_photo_accepts_photo(self, mock_state):
+        message = AsyncMock(spec=Message)
+        photo_obj = MagicMock()
+        photo_obj.file_id = "new_photo_id"
+        message.photo = [MagicMock(), photo_obj]
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "photo_file_ids": ["existing_photo"],
+        })
+
+        await process_photo(message, mock_state)
+
+        calls = mock_state.update_data.call_args_list
+        photo_calls = [c for c in calls if "photo_file_ids" in c.kwargs]
+        assert len(photo_calls) > 0
+        assert "new_photo_id" in photo_calls[0].kwargs["photo_file_ids"]
+
+    @pytest.mark.asyncio
+    async def test_process_photo_rejects_over_limit(self, mock_state):
+        message = AsyncMock(spec=Message)
+        photo_obj = MagicMock()
+        photo_obj.file_id = "extra"
+        message.photo = [photo_obj]
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "photo_file_ids": ["p1", "p2", "p3", "p4", "p5", "p6"],
+        })
+
+        await process_photo(message, mock_state)
+
+        message.answer.assert_awaited_once()
+        assert "6" in message.answer.call_args[0][0]
+        mock_state.update_data.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_photos_done_requires_at_least_one(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "✅ Tayyor"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "photo_file_ids": [],
+            "category": "auto",
+            "answers": {"title": "Test"},
+        })
+
+        await photos_done(message, mock_state)
+
+        message.answer.assert_awaited_once()
+        assert "bitta" in message.answer.call_args[0][0].lower()
+        mock_state.set_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_photos_done_proceeds_to_confirming(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "✅ Tayyor"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "photo_file_ids": ["photo1"],
+            "category": "auto",
+            "answers": {"title": "Chevrolet"},
+            "contact_phone": "+998901234567",
+        })
+
+        await photos_done(message, mock_state)
+
+        mock_state.set_state.assert_awaited_once_with(AdCreation.confirming)
+
+    @pytest.mark.asyncio
+    async def test_invalid_photo_message(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "hello"
+        message.answer = AsyncMock()
+
+        await invalid_photo(message)
+
+        message.answer.assert_awaited_once()
+        assert "rasm" in message.answer.call_args[0][0].lower()
+
+
+class TestInvalidInputHandlers:
+    @pytest.mark.asyncio
+    async def test_invalid_question_input(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.answer = AsyncMock()
+
+        await invalid_question_input(message, mock_state)
+
+        message.answer.assert_awaited_once()
+        assert "matnli" in message.answer.call_args[0][0].lower()
+
+
+class TestValidation:
+    @pytest.mark.asyncio
+    async def test_year_must_be_integer(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "not_a_number"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": 1,
+            "answers": {"title": "Malibu"},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        message.answer.assert_awaited_once()
+        assert "son" in message.answer.call_args[0][0].lower()
+        calls = mock_state.update_data.call_args_list
+        answers_call = [c for c in calls if "answers" in c.kwargs]
+        assert len(answers_call) == 0
+
+    @pytest.mark.asyncio
+    async def test_year_accepts_valid_integer(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "2020"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": 1,
+            "answers": {"title": "Malibu"},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        calls = mock_state.update_data.call_args_list
+        answers_call = [c for c in calls if "answers" in c.kwargs]
+        assert len(answers_call) > 0
+        assert answers_call[0].kwargs["answers"]["year"] == "2020"
+
+    @pytest.mark.asyncio
+    async def test_mileage_must_be_integer(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "abc"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": 2,
+            "answers": {"title": "Malibu", "year": "2020"},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        message.answer.assert_awaited_once()
+        assert "son" in message.answer.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_rooms_must_be_integer(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "three"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "realestate",
+            "q_index": 1,
+            "answers": {"title": "3 xonali"},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        message.answer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_address_too_short(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "ab"
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "realestate",
+            "q_index": 3,
+            "answers": {"title": "3 xonali", "rooms": "3", "area": "65"},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        message.answer.assert_awaited_once()
+        assert "3" in message.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_strip_whitespace(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "  Chevrolet Malibu  "
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": 0,
+            "answers": {},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        calls = mock_state.update_data.call_args_list
+        answers_call = [c for c in calls if "answers" in c.kwargs]
+        assert len(answers_call) > 0
+        assert answers_call[0].kwargs["answers"]["title"] == "Chevrolet Malibu"
+
+    @pytest.mark.asyncio
+    async def test_empty_text_rejected(self, mock_state):
+        message = AsyncMock(spec=Message)
+        message.text = "   "
+        message.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": 0,
+            "answers": {},
+        })
+
+        await process_text_answer(message, mock_state)
+
+        message.answer.assert_awaited_once()
+
+
+class TestSkipQuestionValidation:
+    @pytest.mark.asyncio
+    async def test_skip_mandatory_question_blocked(self, mock_state):
+        callback = AsyncMock()
+        callback.data = "skip_question"
+        callback.message = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        callback.message.answer = AsyncMock()
+        callback.answer = AsyncMock()
+
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": 0,
+            "answers": {},
+        })
+
+        await skip_question(callback, mock_state)
+
+        callback.answer.assert_awaited_once_with(
+            "Bu savolni o'tkazib bo'lmaydi.", show_alert=True
+        )
+        mock_state.update_data.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skip_optional_question_allowed(self, mock_state):
+        callback = AsyncMock()
+        callback.data = "skip_question"
+        callback.message = AsyncMock()
+        callback.message.edit_text = AsyncMock()
+        callback.message.answer = AsyncMock()
+        callback.answer = AsyncMock()
+
+        extra_index = next(
+            i for i, q in enumerate(CATEGORY_QUESTIONS[Category.AUTO])
+            if q.key == "extra"
+        )
+        mock_state.get_data = AsyncMock(return_value={
+            "category": "auto",
+            "q_index": extra_index,
+            "answers": {"title": "Test"},
+        })
+
+        await skip_question(callback, mock_state)
+
+        mock_state.update_data.assert_any_await(q_index=extra_index + 1)
 
 
 class TestAdminHandler:

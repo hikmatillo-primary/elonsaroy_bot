@@ -34,13 +34,13 @@ def category_inline_keyboard() -> InlineKeyboardMarkup:
 
 
 def options_keyboard(
-    options: list[str], *, show_skip: bool = False
+    options: list[tuple[str, str]], *, show_skip: bool = False
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(options), 2):
         row = [
-            InlineKeyboardButton(text=opt, callback_data=f"opt:{opt}")
-            for opt in options[i : i + 2]
+            InlineKeyboardButton(text=label, callback_data=f"opt:{key}")
+            for key, label in options[i : i + 2]
         ]
         rows.append(row)
     if show_skip:
